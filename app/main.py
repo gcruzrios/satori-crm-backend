@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -28,13 +30,22 @@ def create_app() -> FastAPI:
         description="Backend del CRM Clínicas Satori según la especificación final.",
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # CORS. The frontend sends credentials (httpOnly refresh cookie), so the
+    # response must echo the caller's Origin — `allow_origins=["*"]` together
+    # with `allow_credentials=True` makes browsers reject every credentialed
+    # response. Set CORS_ORIGINS (comma-separated) to lock this down in
+    # production; otherwise any origin is reflected.
+    cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+    cors_kwargs: dict = {
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+    if cors_origins:
+        cors_kwargs["allow_origins"] = cors_origins
+    else:
+        cors_kwargs["allow_origin_regex"] = ".*"
+    app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     app.include_router(health_router)
     app.include_router(auth_router, prefix="/api/v1")
