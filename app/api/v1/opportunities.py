@@ -39,6 +39,34 @@ OpportunityUpdate = partial_model(OpportunityCreate, "OpportunityUpdate")
 class OpportunityMove(BaseModel):
     stage_id: UUID
 
+def serialize_opportunity(o: Opportunity) -> dict:
+    def iso(v):
+        return v.isoformat() if v is not None else None
+
+    def uid(v):
+        return str(v) if v is not None else None
+
+    return {
+        "id": str(o.id),
+        "name": o.name,
+        "pipeline_id": uid(o.pipeline_id),
+        "stage_id": uid(o.stage_id),
+        "lead_id": uid(o.lead_id),
+        "contact_id": uid(o.contact_id),
+        "company_id": uid(o.company_id),
+        "expected_value": float(o.expected_value) if o.expected_value is not None else None,
+        "currency": o.currency,
+        "probability": o.probability,
+        "expected_close_date": iso(o.expected_close_date),
+        "status": o.status,
+        "assigned_to": uid(o.assigned_to),
+        "notes": o.notes,
+        "created_at": iso(o.created_at),
+        "updated_at": iso(o.updated_at),
+        "closed_at": iso(o.closed_at),
+    }
+
+
 @router.get("")
 async def list_opportunities(
     page: int = Query(default=1, ge=1),
@@ -47,7 +75,7 @@ async def list_opportunities(
 ):
     stmt = select(Opportunity).where(Opportunity.deleted_at.is_(None)).order_by(Opportunity.created_at.desc())
     items, total = await paginate(db, stmt, page, page_size)
-    return {"items": [{"id": str(item.id), "name": item.name, "status": item.status} for item in items], "total": total, "page": page, "page_size": page_size}
+    return {"items": [serialize_opportunity(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
@@ -62,7 +90,7 @@ async def create_opportunity(payload: OpportunityCreate, db: AsyncSession = Depe
 @router.get("/{opportunity_id}")
 async def get_opportunity(opportunity_id: UUID, db: AsyncSession = Depends(get_db)):
     opportunity = await get_active_or_404(db, Opportunity, opportunity_id, "Opportunity")
-    return {"id": str(opportunity.id), "name": opportunity.name, "status": opportunity.status}
+    return serialize_opportunity(opportunity)
 
 
 @router.put("/{opportunity_id}")
