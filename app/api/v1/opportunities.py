@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.models.company import Company
 from app.models.contact import Contact
 from app.models.opportunity import Opportunity
-from app.models.pipeline import PipelineStage
+from app.models.pipeline import Pipeline, PipelineStage
 
 router = APIRouter(prefix="/opportunities", tags=["opportunities"])
 
@@ -91,6 +91,22 @@ async def _display_names(db: AsyncSession, items: list[Opportunity]) -> dict:
     return names
 
 
+async def _validate_links(db: AsyncSession, pipeline_id, stage_id, contact_id, company_id) -> None:
+    """Mirror the DB rules so violations return a clear 422 instead of a 500."""
+    pipeline = await db.get(Pipeline, pipeline_id) if pipeline_id else None
+    if pipeline is None:
+        raise HTTPException(status_code=422, detail="El pipeline indicado no existe")
+    stage = await db.get(PipelineStage, stage_id) if stage_id else None
+    if stage is None or stage.pipeline_id != pipeline.id:
+        raise HTTPException(status_code=422, detail="La etapa no pertenece al pipeline seleccionado")
+    if not contact_id and not company_id:
+        raise HTTPException(status_code=422, detail="La oportunidad requiere un contacto o una empresa")
+    if pipeline.pipeline_type == "b2b" and not company_id:
+        raise HTTPException(status_code=422, detail="Una oportunidad en un pipeline B2B requiere una empresa")
+    if pipeline.pipeline_type == "b2c" and not contact_id:
+        raise HTTPException(status_code=422, detail="Una oportunidad en un pipeline B2C requiere un contacto")
+
+
 @router.get("")
 async def list_opportunities(
     pipeline_id: UUID | None = None,
@@ -114,6 +130,7 @@ async def list_opportunities(
 
 @router.post("")
 async def create_opportunity(payload: OpportunityCreate, db: AsyncSession = Depends(get_db)):
+    await _validate_links(db, payload.pipeline_id, payload.stage_id, payload.contact_id, payload.company_id)
     opportunity = Opportunity(**payload.model_dump(exclude_none=True))
     db.add(opportunity)
     await db.commit()
@@ -130,6 +147,11 @@ async def get_opportunity(opportunity_id: UUID, db: AsyncSession = Depends(get_d
 @router.put("/{opportunity_id}")
 async def update_opportunity(opportunity_id: UUID, payload: OpportunityUpdate, db: AsyncSession = Depends(get_db)):
     opportunity = await get_active_or_404(db, Opportunity, opportunity_id, "Opportunity")
+    changes = payload.model_dump(exclude_unset=True)
+    effective = lambda f: changes[f] if f in changes else getattr(opportunity, f)  # noqa: E731
+    await _validate_links(
+        db, effective("pipeline_id"), effective("stage_id"), effective("contact_id"), effective("company_id")
+    )
     apply_updates(opportunity, payload)
     await db.commit()
     return {"status": "updated"}
