@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.database import get_db
-from app.core.security import create_access_token
+from app.core.security import create_access_token, create_refresh_token, hash_password
 from app.main import create_app
 from app.models.user import User
 
@@ -25,9 +25,19 @@ class FakeSession:
     async def get(self, model, object_id):
         return self.users.get(object_id)
 
+    async def execute(self, _stmt):
+        """Login lookup: pretend the query matched the only user in the store."""
+        users = list(self.users.values())
 
-def make_user(role: str, active: bool = True) -> User:
-    return User(id=uuid4(), first_name="T", last_name="U", email="t@x.cr", password_hash="x",
+        class _Result:
+            def scalar_one_or_none(self_inner):
+                return users[0] if users else None
+
+        return _Result()
+
+
+def make_user(role: str, active: bool = True, password: str = "x") -> User:
+    return User(id=uuid4(), first_name="T", last_name="U", email="t@x.cr", password_hash=hash_password(password),
                 role=role, is_active=active, deleted_at=None)
 
 
@@ -96,3 +106,49 @@ def test_cors_only_allowed_origins() -> None:
     assert ok2.headers.get("access-control-allow-origin") == "https://satoricrm.greiv.in"
     bad = client.options("/health", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"})
     assert "access-control-allow-origin" not in bad.headers
+
+
+def test_login_sets_httponly_refresh_cookie() -> None:
+    user = make_user("admin", password="secret-pass")
+    r = client_with(user).post("/api/v1/auth/login", json={"email": "t@x.cr", "password": "secret-pass"})
+    assert r.status_code == 200
+    cookie = r.headers["set-cookie"].lower()
+    assert "refresh_token=" in cookie and "httponly" in cookie and "path=/api/v1/auth" in cookie
+    assert "secure" in cookie and "samesite=none" in cookie
+
+
+def test_refresh_returns_new_access_token() -> None:
+    user = make_user("admin")
+    client = client_with(user)
+    client.cookies.set("refresh_token", create_refresh_token(str(user.id)), path="/api/v1/auth")
+    r = client.post("/api/v1/auth/refresh")
+    assert r.status_code == 200
+    token = r.json()["access_token"]
+    assert client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_refresh_requires_valid_refresh_cookie() -> None:
+    user = make_user("admin")
+    client = client_with(user)
+    assert client.post("/api/v1/auth/refresh").status_code == 401
+    # an access token is not accepted as a refresh token
+    client.cookies.set("refresh_token", create_access_token(str(user.id)), path="/api/v1/auth")
+    assert client.post("/api/v1/auth/refresh").status_code == 401
+
+
+def test_refresh_token_not_accepted_as_bearer() -> None:
+    user = make_user("admin")
+    r = client_with(user).get("/api/v1/auth/me", headers={"Authorization": f"Bearer {create_refresh_token(str(user.id))}"})
+    assert r.status_code == 401
+
+
+def test_refresh_rejected_for_inactive_user() -> None:
+    user = make_user("admin", active=False)
+    client = client_with(user)
+    client.cookies.set("refresh_token", create_refresh_token(str(user.id)), path="/api/v1/auth")
+    assert client.post("/api/v1/auth/refresh").status_code == 401
+
+
+def test_logout_clears_cookie() -> None:
+    r = TestClient(create_app()).post("/api/v1/auth/logout")
+    assert r.status_code == 200 and "refresh_token=" in r.headers["set-cookie"].lower()

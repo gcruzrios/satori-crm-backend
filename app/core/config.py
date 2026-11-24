@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     secret_key: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 7
+    refresh_cookie_name: str = "refresh_token"
     redis_url: str = "redis://localhost:6379/0"
     # Comma-separated list of allowed browser origins (override with CORS_ORIGINS).
     cors_origins: str = "https://crm.satori.cr,https://satoricrm.greiv.in"
