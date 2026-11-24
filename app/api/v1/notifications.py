@@ -7,19 +7,22 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import get_active_or_404, paginate, utcnow
 from app.core.database import get_db
+from app.core.deps import get_current_user
 from app.models.notification import Notification
+from app.models.user import User
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
 class NotificationCreate(BaseModel):
-    user_id: str
+    user_id: UUID
     type: str
     title: str
     body: str | None = None
     entity_type: str | None = None
-    entity_id: str | None = None
+    entity_id: UUID | None = None
 
 
 @router.get("")
@@ -27,10 +30,11 @@ async def list_notifications(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Notification).offset((page - 1) * page_size).limit(page_size))
-    items = result.scalars().all()
-    return {"items": [{"id": str(item.id), "title": item.title, "type": item.type} for item in items], "page": page, "page_size": page_size}
+    stmt = select(Notification).where(Notification.user_id == user.id).order_by(Notification.created_at.desc())
+    items, total = await paginate(db, stmt, page, page_size)
+    return {"items": [{"id": str(item.id), "title": item.title, "type": item.type} for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
@@ -43,10 +47,12 @@ async def create_notification(payload: NotificationCreate, db: AsyncSession = De
 
 
 @router.post("/{notification_id}/read")
-async def mark_notification_read(notification_id: UUID, db: AsyncSession = Depends(get_db)):
-    notification = await db.get(Notification, notification_id)
-    if not notification:
+async def mark_notification_read(
+    notification_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
+):
+    notification = await get_active_or_404(db, Notification, notification_id, "Notification")
+    if notification.user_id != user.id:
         raise HTTPException(status_code=404, detail="Notification not found")
-    notification.read_at = __import__("datetime").datetime.utcnow()
+    notification.read_at = utcnow()
     await db.commit()
     return {"status": "read"}

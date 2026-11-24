@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,16 +8,19 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import paginate, apply_updates, get_active_or_404, partial_model, utcnow
 from app.core.database import get_db
-from app.models.quote import Quote, QuoteItem
+from app.core.deps import get_current_user
+from app.models.quote import Quote
+from app.models.user import User
 
 router = APIRouter(prefix="/quotes", tags=["quotes"])
 
 
 class QuoteCreate(BaseModel):
-    opportunity_id: str | None = None
-    contact_id: str | None = None
-    company_id: str | None = None
+    opportunity_id: UUID | None = None
+    contact_id: UUID | None = None
+    company_id: UUID | None = None
     status: str = "draft"
     subtotal: float = 0
     discount: float = 0
@@ -27,6 +30,9 @@ class QuoteCreate(BaseModel):
     valid_until: date | None = None
     notes: str | None = None
 
+
+
+QuoteUpdate = partial_model(QuoteCreate, "QuoteUpdate")
 
 def _serialize_quote(quote: Quote) -> dict:
     return {
@@ -57,19 +63,17 @@ async def list_quotes(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(Quote).where(Quote.deleted_at.is_(None)).order_by(Quote.created_at.desc())
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-    result = await db.execute(stmt)
-    items = result.scalars().all()
-    return {"items": [_serialize_quote(item) for item in items], "page": page, "page_size": page_size}
+    items, total = await paginate(db, stmt, page, page_size)
+    return {"items": [_serialize_quote(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
-async def create_quote(payload: QuoteCreate, db: AsyncSession = Depends(get_db)):
+async def create_quote(payload: QuoteCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     if not payload.contact_id and not payload.company_id:
         raise HTTPException(status_code=400, detail="La cotización requiere contact_id o company_id")
 
     quote_number = await db.scalar(text("SELECT next_document_number('quote', 'COT')"))
-    quote = Quote(quote_number=quote_number, **payload.model_dump(exclude={"valid_until"}, exclude_none=True))
+    quote = Quote(quote_number=quote_number, created_by=user.id, **payload.model_dump(exclude={"valid_until"}, exclude_none=True))
     quote.valid_until = payload.valid_until
     db.add(quote)
     await db.commit()
@@ -79,50 +83,43 @@ async def create_quote(payload: QuoteCreate, db: AsyncSession = Depends(get_db))
 
 @router.get("/{quote_id}")
 async def get_quote(quote_id: UUID, db: AsyncSession = Depends(get_db)):
-    quote = await db.get(Quote, quote_id)
-    if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
+    quote = await get_active_or_404(db, Quote, quote_id, "Quote")
     return _serialize_quote(quote)
 
 
 @router.put("/{quote_id}")
-async def update_quote(quote_id: UUID, payload: QuoteCreate, db: AsyncSession = Depends(get_db)):
-    quote = await db.get(Quote, quote_id)
-    if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(quote, field, value)
+async def update_quote(quote_id: UUID, payload: QuoteUpdate, db: AsyncSession = Depends(get_db)):
+    quote = await get_active_or_404(db, Quote, quote_id, "Quote")
+    apply_updates(quote, payload)
     await db.commit()
     return {"status": "updated"}
 
 
 @router.delete("/{quote_id}")
 async def delete_quote(quote_id: UUID, db: AsyncSession = Depends(get_db)):
-    quote = await db.get(Quote, quote_id)
-    if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
-    quote.deleted_at = datetime.now(timezone.utc)
+    quote = await get_active_or_404(db, Quote, quote_id, "Quote")
+    quote.deleted_at = utcnow()
     await db.commit()
     return {"status": "deleted"}
 
 
 @router.post("/{quote_id}/send")
 async def send_quote(quote_id: UUID, db: AsyncSession = Depends(get_db)):
-    quote = await db.get(Quote, quote_id)
-    if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
+    quote = await get_active_or_404(db, Quote, quote_id, "Quote")
+    if quote.status != "draft":
+        raise HTTPException(status_code=409, detail=f"Only draft quotes can be sent (current status: {quote.status})")
     quote.status = "sent"
-    quote.sent_at = datetime.now(timezone.utc)
+    quote.sent_at = utcnow()
     await db.commit()
     return {"status": "sent", "quote_id": str(quote.id)}
 
 
 @router.post("/{quote_id}/accept")
 async def accept_quote(quote_id: UUID, db: AsyncSession = Depends(get_db)):
-    quote = await db.get(Quote, quote_id)
-    if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
+    quote = await get_active_or_404(db, Quote, quote_id, "Quote")
+    if quote.status != "sent":
+        raise HTTPException(status_code=409, detail=f"Only sent quotes can be accepted (current status: {quote.status})")
     quote.status = "accepted"
-    quote.accepted_at = datetime.now(timezone.utc)
+    quote.accepted_at = utcnow()
     await db.commit()
     return {"status": "accepted", "quote_id": str(quote.id)}

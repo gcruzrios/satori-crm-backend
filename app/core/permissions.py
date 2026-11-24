@@ -9,7 +9,7 @@ ROLE_CAPABILITIES: Final[dict[str, list[str]]] = {
         "opportunities:read", "opportunities:write", "pipeline:move",
         "quotes:read", "quotes:write", "quotes:send", "invoices:read", "invoices:write",
         "activities:read", "activities:write", "communications:read", "communications:write",
-        "services:read", "reports:read", "audit:read",
+        "services:read", "services:write", "reports:read", "audit:read",
     ],
     "manager": [
         "leads:read", "leads:write", "leads:convert", "contacts:read", "contacts:write",

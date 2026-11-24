@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import paginate, apply_updates, get_active_or_404, partial_model, utcnow
 from app.core.database import get_db
 from app.models.service import Service
 
@@ -24,15 +25,18 @@ class ServiceCreate(BaseModel):
     is_active: bool = True
 
 
+
+ServiceUpdate = partial_model(ServiceCreate, "ServiceUpdate")
+
 @router.get("")
 async def list_services(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Service).offset((page - 1) * page_size).limit(page_size))
-    items = result.scalars().all()
-    return {"items": [{"id": str(item.id), "name": item.name, "code": item.code, "price": str(item.price)} for item in items], "page": page, "page_size": page_size}
+    stmt = select(Service).where(Service.deleted_at.is_(None)).order_by(Service.name)
+    items, total = await paginate(db, stmt, page, page_size)
+    return {"items": [{"id": str(item.id), "name": item.name, "code": item.code, "price": str(item.price)} for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
@@ -46,28 +50,21 @@ async def create_service(payload: ServiceCreate, db: AsyncSession = Depends(get_
 
 @router.get("/{service_id}")
 async def get_service(service_id: UUID, db: AsyncSession = Depends(get_db)):
-    service = await db.get(Service, service_id)
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
+    service = await get_active_or_404(db, Service, service_id, "Service")
     return {"id": str(service.id), "name": service.name, "code": service.code, "price": str(service.price)}
 
 
 @router.put("/{service_id}")
-async def update_service(service_id: UUID, payload: ServiceCreate, db: AsyncSession = Depends(get_db)):
-    service = await db.get(Service, service_id)
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(service, field, value)
+async def update_service(service_id: UUID, payload: ServiceUpdate, db: AsyncSession = Depends(get_db)):
+    service = await get_active_or_404(db, Service, service_id, "Service")
+    apply_updates(service, payload)
     await db.commit()
     return {"status": "updated"}
 
 
 @router.delete("/{service_id}")
 async def delete_service(service_id: UUID, db: AsyncSession = Depends(get_db)):
-    service = await db.get(Service, service_id)
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
-    service.deleted_at = __import__("datetime").datetime.utcnow()
+    service = await get_active_or_404(db, Service, service_id, "Service")
+    service.deleted_at = utcnow()
     await db.commit()
     return {"status": "deleted"}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,17 +8,20 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import paginate, apply_updates, get_active_or_404, partial_model, utcnow
 from app.core.database import get_db
+from app.core.deps import get_current_user
 from app.models.invoice import Invoice
+from app.models.user import User
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
 
 class InvoiceCreate(BaseModel):
-    quote_id: str | None = None
-    opportunity_id: str | None = None
-    contact_id: str | None = None
-    company_id: str | None = None
+    quote_id: UUID | None = None
+    opportunity_id: UUID | None = None
+    contact_id: UUID | None = None
+    company_id: UUID | None = None
     status: str = "draft"
     subtotal: float = 0
     discount: float = 0
@@ -29,6 +32,9 @@ class InvoiceCreate(BaseModel):
     due_date: date | None = None
     notes: str | None = None
 
+
+
+InvoiceUpdate = partial_model(InvoiceCreate, "InvoiceUpdate")
 
 def _serialize_invoice(invoice: Invoice) -> dict:
     return {
@@ -60,19 +66,17 @@ async def list_invoices(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(Invoice).where(Invoice.deleted_at.is_(None)).order_by(Invoice.created_at.desc())
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-    result = await db.execute(stmt)
-    items = result.scalars().all()
-    return {"items": [_serialize_invoice(item) for item in items], "page": page, "page_size": page_size}
+    items, total = await paginate(db, stmt, page, page_size)
+    return {"items": [_serialize_invoice(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
-async def create_invoice(payload: InvoiceCreate, db: AsyncSession = Depends(get_db)):
+async def create_invoice(payload: InvoiceCreate, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     if not payload.contact_id and not payload.company_id:
         raise HTTPException(status_code=400, detail="La factura requiere contact_id o company_id")
 
     invoice_number = await db.scalar(text("SELECT next_document_number('invoice', 'FAC')"))
-    invoice = Invoice(invoice_number=invoice_number, **payload.model_dump(exclude={"issue_date", "due_date"}, exclude_none=True))
+    invoice = Invoice(invoice_number=invoice_number, created_by=user.id, **payload.model_dump(exclude={"issue_date", "due_date"}, exclude_none=True))
     invoice.issue_date = payload.issue_date
     invoice.due_date = payload.due_date
     db.add(invoice)
@@ -83,38 +87,31 @@ async def create_invoice(payload: InvoiceCreate, db: AsyncSession = Depends(get_
 
 @router.get("/{invoice_id}")
 async def get_invoice(invoice_id: UUID, db: AsyncSession = Depends(get_db)):
-    invoice = await db.get(Invoice, invoice_id)
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    invoice = await get_active_or_404(db, Invoice, invoice_id, "Invoice")
     return _serialize_invoice(invoice)
 
 
 @router.put("/{invoice_id}")
-async def update_invoice(invoice_id: UUID, payload: InvoiceCreate, db: AsyncSession = Depends(get_db)):
-    invoice = await db.get(Invoice, invoice_id)
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(invoice, field, value)
+async def update_invoice(invoice_id: UUID, payload: InvoiceUpdate, db: AsyncSession = Depends(get_db)):
+    invoice = await get_active_or_404(db, Invoice, invoice_id, "Invoice")
+    apply_updates(invoice, payload)
     await db.commit()
     return {"status": "updated"}
 
 
 @router.delete("/{invoice_id}")
 async def delete_invoice(invoice_id: UUID, db: AsyncSession = Depends(get_db)):
-    invoice = await db.get(Invoice, invoice_id)
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-    invoice.deleted_at = datetime.now(timezone.utc)
+    invoice = await get_active_or_404(db, Invoice, invoice_id, "Invoice")
+    invoice.deleted_at = utcnow()
     await db.commit()
     return {"status": "deleted"}
 
 
 @router.post("/{invoice_id}/send")
 async def send_invoice(invoice_id: UUID, db: AsyncSession = Depends(get_db)):
-    invoice = await db.get(Invoice, invoice_id)
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    invoice = await get_active_or_404(db, Invoice, invoice_id, "Invoice")
+    if invoice.status != "draft":
+        raise HTTPException(status_code=409, detail=f"Only draft invoices can be sent (current status: {invoice.status})")
     invoice.status = "sent"
     await db.commit()
     return {"status": "sent", "invoice_id": str(invoice.id)}

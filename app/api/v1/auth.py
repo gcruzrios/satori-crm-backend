@@ -8,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.core.permissions import get_capabilities_by_role
 from app.core.security import create_access_token, verify_password
 from app.models.user import User
 
@@ -30,7 +32,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> To
     result = await db.execute(select(User).where(User.email == payload.email.lower()))
     user = result.scalar_one_or_none()
 
-    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
+    if user is None or not user.is_active or user.deleted_at is not None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     token = create_access_token(subject=str(user.id))
@@ -38,3 +40,15 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> To
         access_token=token,
         user={"email": user.email, "role": user.role, "first_name": user.first_name, "last_name": user.last_name},
     )
+
+
+@router.get("/me")
+async def me(user: User = Depends(get_current_user)) -> dict:
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "role": user.role,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "capabilities": get_capabilities_by_role(user.role),
+    }

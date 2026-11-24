@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import apply_updates, get_active_or_404, partial_model, utcnow
 from app.core.database import get_db
 from app.models.company import Company
 from app.models.contact import Contact
@@ -47,10 +48,13 @@ class ContactCreate(BaseModel):
     phone: str | None = None
     whatsapp: str | None = None
     job_title: str | None = None
-    company_id: str | None = None
-    lead_id: str | None = None
+    company_id: UUID | None = None
+    lead_id: UUID | None = None
     notes: str | None = None
 
+
+
+ContactUpdate = partial_model(ContactCreate, "ContactUpdate")
 
 @router.get("")
 async def list_contacts(
@@ -86,20 +90,15 @@ async def create_contact(payload: ContactCreate, db: AsyncSession = Depends(get_
 
 @router.get("/{contact_id}")
 async def get_contact(contact_id: UUID, db: AsyncSession = Depends(get_db)):
-    contact = await db.get(Contact, contact_id)
-    if not contact or contact.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Contact not found")
+    contact = await get_active_or_404(db, Contact, contact_id, "Contact")
     names = await _company_names(db, [contact])
     return _serialize_contact(contact, names.get(str(contact.company_id)))
 
 
 @router.put("/{contact_id}")
-async def update_contact(contact_id: UUID, payload: ContactCreate, db: AsyncSession = Depends(get_db)):
-    contact = await db.get(Contact, contact_id)
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(contact, field, value)
+async def update_contact(contact_id: UUID, payload: ContactUpdate, db: AsyncSession = Depends(get_db)):
+    contact = await get_active_or_404(db, Contact, contact_id, "Contact")
+    apply_updates(contact, payload)
     await db.commit()
     await db.refresh(contact)
     names = await _company_names(db, [contact])
@@ -108,9 +107,7 @@ async def update_contact(contact_id: UUID, payload: ContactCreate, db: AsyncSess
 
 @router.delete("/{contact_id}")
 async def delete_contact(contact_id: UUID, db: AsyncSession = Depends(get_db)):
-    contact = await db.get(Contact, contact_id)
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    contact.deleted_at = __import__("datetime").datetime.utcnow()
+    contact = await get_active_or_404(db, Contact, contact_id, "Contact")
+    contact.deleted_at = utcnow()
     await db.commit()
     return {"status": "deleted"}

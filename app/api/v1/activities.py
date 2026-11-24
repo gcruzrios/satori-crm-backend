@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import paginate, apply_updates, get_active_or_404, partial_model, utcnow
 from app.core.database import get_db
 from app.models.activity import Activity
 
@@ -19,13 +20,16 @@ class ActivityCreate(BaseModel):
     status: str = "pending"
     title: str
     description: str | None = None
-    opportunity_id: str | None = None
-    lead_id: str | None = None
-    contact_id: str | None = None
-    company_id: str | None = None
-    assigned_to: str | None = None
+    opportunity_id: UUID | None = None
+    lead_id: UUID | None = None
+    contact_id: UUID | None = None
+    company_id: UUID | None = None
+    assigned_to: UUID | None = None
     due_at: datetime | None = None
 
+
+
+ActivityUpdate = partial_model(ActivityCreate, "ActivityUpdate")
 
 def _serialize_activity(activity: Activity) -> dict:
     return {
@@ -52,10 +56,8 @@ async def list_activities(
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(Activity).where(Activity.deleted_at.is_(None)).order_by(Activity.created_at.desc())
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-    result = await db.execute(stmt)
-    items = result.scalars().all()
-    return {"items": [_serialize_activity(item) for item in items], "page": page, "page_size": page_size}
+    items, total = await paginate(db, stmt, page, page_size)
+    return {"items": [_serialize_activity(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
@@ -69,28 +71,21 @@ async def create_activity(payload: ActivityCreate, db: AsyncSession = Depends(ge
 
 @router.get("/{activity_id}")
 async def get_activity(activity_id: UUID, db: AsyncSession = Depends(get_db)):
-    activity = await db.get(Activity, activity_id)
-    if not activity:
-        raise HTTPException(status_code=404, detail="Activity not found")
+    activity = await get_active_or_404(db, Activity, activity_id, "Activity")
     return _serialize_activity(activity)
 
 
 @router.put("/{activity_id}")
-async def update_activity(activity_id: UUID, payload: ActivityCreate, db: AsyncSession = Depends(get_db)):
-    activity = await db.get(Activity, activity_id)
-    if not activity:
-        raise HTTPException(status_code=404, detail="Activity not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(activity, field, value)
+async def update_activity(activity_id: UUID, payload: ActivityUpdate, db: AsyncSession = Depends(get_db)):
+    activity = await get_active_or_404(db, Activity, activity_id, "Activity")
+    apply_updates(activity, payload)
     await db.commit()
     return {"status": "updated"}
 
 
 @router.delete("/{activity_id}")
 async def delete_activity(activity_id: UUID, db: AsyncSession = Depends(get_db)):
-    activity = await db.get(Activity, activity_id)
-    if not activity:
-        raise HTTPException(status_code=404, detail="Activity not found")
-    activity.deleted_at = datetime.now(timezone.utc)
+    activity = await get_active_or_404(db, Activity, activity_id, "Activity")
+    activity.deleted_at = utcnow()
     await db.commit()
     return {"status": "deleted"}

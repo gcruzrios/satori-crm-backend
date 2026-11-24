@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import apply_updates, get_active_or_404, partial_model, utcnow
 from app.core.database import get_db
 from app.models.company import Company
 
@@ -35,7 +36,7 @@ def _serialize_company(company: Company) -> dict:
 class CompanyCreate(BaseModel):
     name: str
     legal_name: str | None = None
-    tax_id: str | None = None
+    tax_id: UUID | None = None
     industry: str | None = None
     email: str | None = None
     phone: str | None = None
@@ -45,6 +46,9 @@ class CompanyCreate(BaseModel):
     country: str | None = "Costa Rica"
     notes: str | None = None
 
+
+
+CompanyUpdate = partial_model(CompanyCreate, "CompanyUpdate")
 
 @router.get("")
 async def list_companies(
@@ -76,19 +80,14 @@ async def create_company(payload: CompanyCreate, db: AsyncSession = Depends(get_
 
 @router.get("/{company_id}")
 async def get_company(company_id: UUID, db: AsyncSession = Depends(get_db)):
-    company = await db.get(Company, company_id)
-    if not company or company.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Company not found")
+    company = await get_active_or_404(db, Company, company_id, "Company")
     return _serialize_company(company)
 
 
 @router.put("/{company_id}")
-async def update_company(company_id: UUID, payload: CompanyCreate, db: AsyncSession = Depends(get_db)):
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(company, field, value)
+async def update_company(company_id: UUID, payload: CompanyUpdate, db: AsyncSession = Depends(get_db)):
+    company = await get_active_or_404(db, Company, company_id, "Company")
+    apply_updates(company, payload)
     await db.commit()
     await db.refresh(company)
     return _serialize_company(company)
@@ -96,9 +95,7 @@ async def update_company(company_id: UUID, payload: CompanyCreate, db: AsyncSess
 
 @router.delete("/{company_id}")
 async def delete_company(company_id: UUID, db: AsyncSession = Depends(get_db)):
-    company = await db.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    company.deleted_at = __import__("datetime").datetime.utcnow()
+    company = await get_active_or_404(db, Company, company_id, "Company")
+    company.deleted_at = utcnow()
     await db.commit()
     return {"status": "deleted"}

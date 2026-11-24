@@ -7,7 +7,10 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.crud import apply_updates, get_active_or_404, partial_model, utcnow
 from app.core.database import get_db
+from app.models.company import Company
+from app.models.contact import Contact
 from app.models.lead import Lead
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -48,11 +51,11 @@ class LeadCreate(BaseModel):
     status: str = "new"
     score: int = 0
     message: str | None = None
-    assigned_to: str | None = None
+    assigned_to: UUID | None = None
 
 
-class LeadUpdate(LeadCreate):
-    pass
+
+LeadUpdate = partial_model(LeadCreate, "LeadUpdate")
 
 
 @router.get("")
@@ -60,7 +63,7 @@ async def list_leads(
     status: str | None = None,
     source: str | None = None,
     lead_type: str | None = None,
-    assigned_to: str | None = None,
+    assigned_to: UUID | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -92,19 +95,14 @@ async def create_lead(payload: LeadCreate, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{lead_id}")
 async def get_lead(lead_id: UUID, db: AsyncSession = Depends(get_db)):
-    lead = await db.get(Lead, lead_id)
-    if not lead or lead.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="Lead not found")
+    lead = await get_active_or_404(db, Lead, lead_id, "Lead")
     return _serialize_lead(lead)
 
 
 @router.put("/{lead_id}")
 async def update_lead(lead_id: UUID, payload: LeadUpdate, db: AsyncSession = Depends(get_db)):
-    lead = await db.get(Lead, lead_id)
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(lead, field, value)
+    lead = await get_active_or_404(db, Lead, lead_id, "Lead")
+    apply_updates(lead, payload)
     await db.commit()
     await db.refresh(lead)
     return _serialize_lead(lead)
@@ -112,17 +110,42 @@ async def update_lead(lead_id: UUID, payload: LeadUpdate, db: AsyncSession = Dep
 
 @router.delete("/{lead_id}")
 async def delete_lead(lead_id: UUID, db: AsyncSession = Depends(get_db)):
-    lead = await db.get(Lead, lead_id)
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
-    lead.deleted_at = __import__("datetime").datetime.utcnow()
+    lead = await get_active_or_404(db, Lead, lead_id, "Lead")
+    lead.deleted_at = utcnow()
     await db.commit()
     return {"status": "deleted"}
 
 
 @router.post("/{lead_id}/convert")
 async def convert_lead(lead_id: UUID, db: AsyncSession = Depends(get_db)):
-    lead = await db.get(Lead, lead_id)
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
-    return {"status": "converted", "lead_id": str(lead.id)}
+    """Convert a lead into a contact (and a company for company leads)."""
+    lead = await get_active_or_404(db, Lead, lead_id, "Lead")
+    if lead.status == "converted":
+        raise HTTPException(status_code=409, detail="Lead already converted")
+
+    company: Company | None = None
+    if lead.lead_type == "company" and lead.company_name:
+        company = Company(name=lead.company_name, email=lead.email, phone=lead.phone)
+        db.add(company)
+        await db.flush()
+
+    contact = Contact(
+        first_name=lead.first_name or lead.company_name or "Sin nombre",
+        last_name=lead.last_name or "-",
+        email=lead.email,
+        phone=lead.phone,
+        whatsapp=lead.whatsapp,
+        company_id=company.id if company else None,
+        lead_id=lead.id,
+        notes=lead.message,
+    )
+    db.add(contact)
+    lead.status = "converted"
+    lead.converted_at = utcnow()
+    await db.commit()
+    return {
+        "status": "converted",
+        "lead_id": str(lead.id),
+        "contact_id": str(contact.id),
+        "company_id": str(company.id) if company else None,
+    }
