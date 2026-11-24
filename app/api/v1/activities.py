@@ -79,6 +79,10 @@ async def get_activity(activity_id: UUID, db: AsyncSession = Depends(get_db)):
 async def update_activity(activity_id: UUID, payload: ActivityUpdate, db: AsyncSession = Depends(get_db)):
     activity = await get_active_or_404(db, Activity, activity_id, "Activity")
     apply_updates(activity, payload)
+    if activity.status == "completed" and activity.completed_at is None:
+        activity.completed_at = utcnow()
+    elif activity.status != "completed":
+        activity.completed_at = None
     await db.commit()
     return {"status": "updated"}
 
