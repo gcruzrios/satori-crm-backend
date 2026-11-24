@@ -6,7 +6,7 @@ ROLE_CAPABILITIES: Final[dict[str, list[str]]] = {
     "admin": [
         "users:read", "users:write", "leads:read", "leads:write", "leads:convert",
         "contacts:read", "contacts:write", "companies:read", "companies:write",
-        "opportunities:read", "opportunities:write", "pipeline:move",
+        "opportunities:read", "opportunities:write", "opportunities:move", "pipeline:read", "pipeline:move",
         "quotes:read", "quotes:write", "quotes:send", "invoices:read", "invoices:write",
         "activities:read", "activities:write", "communications:read", "communications:write",
         "services:read", "services:write", "reports:read", "audit:read",
@@ -14,15 +14,15 @@ ROLE_CAPABILITIES: Final[dict[str, list[str]]] = {
     "manager": [
         "leads:read", "leads:write", "leads:convert", "contacts:read", "contacts:write",
         "companies:read", "companies:write", "opportunities:read", "opportunities:write",
-        "pipeline:move", "quotes:read", "quotes:write", "quotes:send",
+        "opportunities:move", "pipeline:read", "pipeline:move", "quotes:read", "quotes:write", "quotes:send",
         "invoices:read", "activities:read", "activities:write", "communications:read",
         "communications:write", "services:read", "reports:read",
     ],
     "sales": [
         "leads:read", "leads:write", "leads:convert", "contacts:read", "contacts:write",
         "companies:read", "companies:write", "opportunities:read", "opportunities:write",
-        "pipeline:move", "quotes:read", "quotes:write", "quotes:send", "invoices:read",
-        "activities:read", "activities:write", "communications:read", "communications:write",
+        "opportunities:move", "pipeline:read", "pipeline:move", "quotes:read", "quotes:write", "quotes:send",
+        "invoices:read", "activities:read", "activities:write", "communications:read", "communications:write",
         "services:read",
     ],
     "therapist": [
