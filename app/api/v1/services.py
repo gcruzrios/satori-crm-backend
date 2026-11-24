@@ -28,6 +28,22 @@ class ServiceCreate(BaseModel):
 
 ServiceUpdate = partial_model(ServiceCreate, "ServiceUpdate")
 
+def _serialize_service(s: Service) -> dict:
+    return {
+        "id": str(s.id),
+        "name": s.name,
+        "code": s.code,
+        "description": s.description,
+        "service_type": s.service_type,
+        "price": float(s.price) if s.price is not None else 0,
+        "currency": s.currency,
+        "billing_type": s.billing_type,
+        "is_active": s.is_active,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    }
+
+
 @router.get("")
 async def list_services(
     page: int = Query(default=1, ge=1),
@@ -36,7 +52,7 @@ async def list_services(
 ):
     stmt = select(Service).where(Service.deleted_at.is_(None)).order_by(Service.name)
     items, total = await paginate(db, stmt, page, page_size)
-    return {"items": [{"id": str(item.id), "name": item.name, "code": item.code, "price": str(item.price)} for item in items], "total": total, "page": page, "page_size": page_size}
+    return {"items": [_serialize_service(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("")
@@ -51,7 +67,7 @@ async def create_service(payload: ServiceCreate, db: AsyncSession = Depends(get_
 @router.get("/{service_id}")
 async def get_service(service_id: UUID, db: AsyncSession = Depends(get_db)):
     service = await get_active_or_404(db, Service, service_id, "Service")
-    return {"id": str(service.id), "name": service.name, "code": service.code, "price": str(service.price)}
+    return _serialize_service(service)
 
 
 @router.put("/{service_id}")
